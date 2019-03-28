@@ -54,21 +54,22 @@ class MonacoWebpackPlugin {
     const languages = options.languages || Object.keys(languagesById);
     const features = getFeaturesIds(options.features || [], featuresById);
     const output = options.output || '';
+    const corsPathPrefix = options.corsPathPrefix || '';
     this.options = {
       languages: languages.map((id) => languagesById[id]).filter(Boolean),
       features: features.map(id => featuresById[id]).filter(Boolean),
-      output,
+      output, corsPathPrefix
     };
   }
 
   apply(compiler) {
-    const { languages, features, output } = this.options;
+    const { languages, features, output, corsPathPrefix } = this.options;
     const publicPath = getPublicPath(compiler);
     const modules = [EDITOR_MODULE].concat(languages).concat(features);
     const workers = modules.map(
       ({ label, alias, worker }) => worker && (mixin({ label, alias }, worker))
     ).filter(Boolean);
-    const rules = createLoaderRules(languages, features, workers, output, publicPath);
+    const rules = createLoaderRules(languages, features, workers, output, publicPath, corsPathPrefix);
     const plugins = createPlugins(workers, output);
     addCompilerRules(compiler, rules);
     addCompilerPlugins(compiler, plugins);
@@ -89,7 +90,7 @@ function getPublicPath(compiler) {
   return compiler.options.output && compiler.options.output.publicPath || '';
 }
 
-function createLoaderRules(languages, features, workers, outputPath, publicPath) {
+function createLoaderRules(languages, features, workers, outputPath, publicPath, corsPathPrefix) {
   if (!languages.length && !features.length) { return []; }
   const languagePaths = flatArr(languages.map(({ entry }) => entry).filter(Boolean));
   const featurePaths = flatArr(features.map(({ entry }) => entry).filter(Boolean));
@@ -111,17 +112,24 @@ function createLoaderRules(languages, features, workers, outputPath, publicPath)
   }
 
   const globals = {
-    'MonacoEnvironment': `(function (paths) {
+    'MonacoEnvironment': `(function (paths, corsPathPrefix) {
       function stripTrailingSlash(str) {
         return str.replace(/\\/$/, '');
       }
       return {
         getWorkerUrl: function (moduleId, label) {
-          var pathPrefix = (typeof window.__webpack_public_path__ === 'string' ? window.__webpack_public_path__ : ${JSON.stringify(publicPath)});
-          return (pathPrefix ? stripTrailingSlash(pathPrefix) + '/' : '') + paths[label];
+          if (corsPathPrefix) {
+            var pathPrefix = stripTrailingSlash(corsPathPrefix) + '/'
+            return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(
+              "self.MonacoEnvironment = { baseUrl: '" + pathPrefix + "' }; importScripts('" + pathPrefix + paths[label] + "');"
+            );
+          } else {
+            var pathPrefix = (typeof window.__webpack_public_path__ === 'string' ? window.__webpack_public_path__ : ${JSON.stringify(publicPath)});
+            return (pathPrefix ? stripTrailingSlash(pathPrefix) + '/' : '') + paths[label];
+          }
         }
       };
-    })(${JSON.stringify(workerPaths, null, 2)})`,
+    })(${JSON.stringify(workerPaths, null, 2)}, '${corsPathPrefix}')`,
   };
   return [
     {
